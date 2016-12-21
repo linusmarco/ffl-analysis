@@ -77,20 +77,19 @@ def places(df, winsvar, ptsvar):
 if (__name__ == '__main__'):
 
 
-    cur_week       = 11
+    cur_week       = 8
     tot_weeks      = 12
     tot_teams      = 12
-    simulations    = 10000
+    simulations    = 100
     rand_seed      = 123456
-    input_path     = 'Inputs.xlsx'
-    matchups_sheet = 'Matchups'
-    points_sheet   = 'Points'
+    schedule_data  = '../example-data/schedule.csv'
+    results_data   = '../example-data/results.csv'
     use_adj_avg    = True
     use_adj_std    = True
 
 
-    matchups = pd.read_excel(input_path,matchups_sheet)
-    points   = pd.read_excel(input_path,points_sheet)
+    matchups = pd.read_csv(schedule_data)
+    points   = pd.read_csv(results_data)
 
     points = points.drop('Names',1)
 
@@ -231,5 +230,6 @@ if (__name__ == '__main__'):
     df = places(df,'W','Pts Tot')
     df['Place'] = df.index + 1
 
-    df[['Place','Names','W','L','Pts Avg','Pts Std','Breakdown W','Breakdown L','Playoff Odds','As Good Odds']].to_excel('Output_wk_%s.xlsx' % str(cur_week),'Records',index=False)
-    df.to_excel('Output_raw_wk_%s.xlsx' % str(cur_week),'Raw')
+    output = df[['Place','Names','W','L','Pts Avg','Pts Std','Breakdown W','Breakdown L','Playoff Odds','As Good Odds']]
+    output.to_csv('../example-output/output_wk_%s.csv' % str(cur_week), index=False)
+    # df.to_csv('../example-output/output_raw_wk_%s.csv' % str(cur_week), index=False)
