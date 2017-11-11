@@ -8,7 +8,7 @@ import numpy as np
 
 
 GLOBALS = dict()
-GLOBALS['OUTDIR'] = ""
+GLOBALS['OUTDIR'] = "../example-output"
 GLOBALS['LOG_PATH'] = os.path.join(GLOBALS['OUTDIR'], "log.log")
 GLOBALS['CUR_WEEK'] = 4
 GLOBALS['TOT_WEEKS'] = 12
@@ -44,20 +44,26 @@ def get_result(r, wk):
         return 'W'
     elif pts_for < pts_agnst:
         return 'L'
+    elif pts_for == pts_agnst:
+        return 'T'
     else:
-        raise ValueError('Tie!')
+        msg = 'unable to get result: {} - {}'.format(pts_for, pts_agnst)
+        raise ValueError(msg)
 
 
-def get_record(df, curwk):
-    df['W'] = 0
-    df['L'] = 0
-
+def get_results(df, curwk):
     for wk in map(str, range(1, curwk + 1)):
         pts_agnst = df['Opp ' + wk].map(lambda x: df.loc[x - 1, 'Pts ' + wk])
         df['Pts Agnst ' + wk] = pts_agnst
         df['Result ' + wk] = df.apply(lambda r: get_result(r, wk), axis=1)
-        df['W'] = df['W'] + (df['Result ' + wk] == 'W')
-        df['L'] = df['L'] + (df['Result ' + wk] == 'L')
+
+
+def get_record(df, curwk, startwk=1):
+    res_cols = ['Result ' + w for w in map(str, range(startwk, curwk + 1))]
+
+    df['W'] = df[res_cols].apply(lambda x: x == 'W', axis=1).sum(axis=1)
+    df['L'] = df[res_cols].apply(lambda x: x == 'L', axis=1).sum(axis=1)
+    df['T'] = df[res_cols].apply(lambda x: x == 'T', axis=1).sum(axis=1)
 
 
 def games_against_tms(row, tms, curwk):
@@ -81,8 +87,10 @@ def get_sort_order(df, by, ascending=True):
 
 def break_tie_h2h(rows, curwk):
     teams = list(rows['Teams'])
-    rows['h2h_G'] = rows.apply(lambda r: games_against_tms(r, teams, curwk), axis=1)
-    rows['h2h_W'] = rows.apply(lambda r: wins_against_tms(r, teams, curwk), axis=1)
+    rows['h2h_G'] = rows.apply(lambda r: games_against_tms(r, teams, curwk),
+                               axis=1)
+    rows['h2h_W'] = rows.apply(lambda r: wins_against_tms(r, teams, curwk),
+                               axis=1)
 
     if rows['h2h_G'].nunique() == 1 and rows['h2h_W'].nunique() == len(rows):
         return list(get_sort_order(rows, 'h2h_W', ascending=False))
@@ -173,12 +181,10 @@ def break_ties(df, curwk):
             df.loc[df['Place'] == i, 'tiebreaker'] = break_tie(rows, curwk)
 
 
-def places(df, curwk, winsvar, ptsvar):
-
-    # copy df for manipulation
+def places(df, curwk):
     df_temp = copy.copy(df)
 
-    df_temp.sort_values(by=winsvar, ascending=False, inplace=True)
+    df_temp.sort_values(by='W', ascending=False, inplace=True)
     df_temp.reset_index(drop=True, inplace=True)
 
     # establish places (with ties)
@@ -187,7 +193,7 @@ def places(df, curwk, winsvar, ptsvar):
     for i, row in df_temp.iterrows():
 
         if (i > 0):
-            if int(df_temp.iloc[[i - 1]][winsvar]) != row[winsvar]:
+            if int(df_temp.iloc[[i - 1]]['W']) != row['W']:
                 place += 1
 
         df_temp.loc[i, 'Place'] = place
@@ -200,6 +206,91 @@ def places(df, curwk, winsvar, ptsvar):
     df_temp['Place'] = df_temp.index + 1
 
     return df_temp
+
+
+def simulate(df):
+    df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
+
+    np.random.seed(GLOBALS['RAND_SEED'])
+
+    df = df.join(pd.DataFrame(0, df.index, ['Playoffs', 'As Good']))
+
+    if GLOBALS['USE_ADJ_AVG']:
+        avg_var = 'Pts Avg Adj'
+    else:
+        avg_var = 'Pts Avg'
+
+    if GLOBALS['USE_ADJ_STD']:
+        std_var = 'Pts Std Adj'
+    else:
+        std_var = 'Pts Std'
+
+    all_wks = list(map(str, range(1, GLOBALS['TOT_WEEKS'] + 1)))
+    futr_wks = list(map(str, range(GLOBALS['CUR_WEEK'],
+                                   GLOBALS['TOT_WEEKS'] + 1)))
+
+    opp_cols = ['Opp ' + w for w in all_wks]
+
+    pts_cols = ['Pts ' + w for w in all_wks]
+    futr_pts_cols = ['Pts ' + w for w in futr_wks]
+
+    # pts_agnst_cols = ['Pts Agnst' + w for w in all_wks]
+    futr_pts_agnst_cols = ['Pts Agnst ' + w for w in futr_wks]
+
+    for sim_num in range(GLOBALS['SIMULATIONS']):
+        dfc = copy.copy(df)
+
+        dfc = dfc[
+            [
+                'Teams', 'W', 'L', 'T',
+                'Pts Tot', 'Pts Tot Agnst',
+                avg_var, std_var
+            ] + opp_cols
+        ]
+        dfc[[
+            'Real W', 'Real L', 'Real T',
+            'Real Pts Tot', 'Real Pts Tot Agnst'
+        ]] = dfc[['W', 'L', 'T', 'Pts Tot', 'Pts Tot Agnst']]
+
+        means = dfc[[avg_var] * len(pts_cols)]
+        stds = dfc[[std_var] * len(pts_cols)]
+        dfc[pts_cols] = pd.DataFrame(np.random.normal(loc=means, scale=stds))
+
+        get_results(dfc, GLOBALS['TOT_WEEKS'])
+
+        get_record(dfc, GLOBALS['CUR_WEEK'])
+        dfc['As Good'] = dfc['W'] >= dfc['Real W']
+
+        get_record(dfc, GLOBALS['TOT_WEEKS'], startwk=GLOBALS['CUR_WEEK'] + 1)
+
+        dfc['W'] += dfc['Real W']
+        dfc['L'] += dfc['Real L']
+        dfc['T'] += dfc['Real T']
+
+        sim_futr_pts = dfc[futr_pts_cols].sum(axis=1, skipna=True)
+        dfc['Pts Tot'] = dfc['Real Pts Tot'] + sim_futr_pts
+
+        sim_futr_pts_agnst = dfc[futr_pts_agnst_cols].sum(axis=1, skipna=True)
+        dfc['Pts Tot Agnst'] = dfc['Real Pts Tot Agnst'] + sim_futr_pts_agnst
+
+        dfc = places(dfc, GLOBALS['TOT_WEEKS'])
+
+        dfc['Playoffs'] = 0 + (dfc.index <= 3)
+
+        dfc.sort_values(by='Teams', ascending=True, inplace=True)
+        dfc.reset_index(drop=True, inplace=True)
+
+        df['Playoffs'] = df['Playoffs'] + dfc['Playoffs']
+        df['As Good'] = df['As Good'] + dfc['As Good']
+
+        msg = "Simulations completed: {} of {}    \r"
+        sys.stdout.write(msg.format(sim_num + 1, GLOBALS['SIMULATIONS']))
+        sys.stdout.flush()
+
+    df['Playoff Odds'] = df['Playoffs'] / GLOBALS['SIMULATIONS']
+    df['As Good Odds'] = df['As Good'] / GLOBALS['SIMULATIONS']
+
+    return df
 
 
 def main():
@@ -229,12 +320,13 @@ def main():
 
     df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
 
+    get_results(df, GLOBALS['CUR_WEEK'])
     get_record(df, GLOBALS['CUR_WEEK'])
 
     cols = ['Pts Agnst ' + str(x) for x in range(1, GLOBALS['CUR_WEEK'] + 1)]
     df['Pts Tot Agnst'] = df[cols].sum(axis=1, skipna=True)
 
-    df = places(df, GLOBALS['CUR_WEEK'], 'W', 'Pts Tot')
+    df = places(df, GLOBALS['CUR_WEEK'])
 
     # get breakdown
     df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
@@ -254,87 +346,14 @@ def main():
         'Pts Tot', 'Pts Tot Agnst'
     ]])
 
-    assert False
-
-    # simulate
     print("Simulating...")
-    df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
+    df = simulate(df)
 
-    np.random.seed(GLOBALS['RAND_SEED'])
-
-    df['Playoffs'] = 0
-    df['As Good'] = 0
-
-    for sim_num in range(GLOBALS['SIMULATIONS']):
-        df_copy = copy.copy(df)
-
-        df_copy['Sim W'] = 0
-        df_copy['Sim L'] = 0
-        df_copy['Sim T'] = 0
-
-        for week_num in range(1, GLOBALS['TOT_WEEKS'] + 1):
-
-            if (GLOBALS['USE_ADJ_AVG']):
-                avg_var = 'Pts Avg Adj'
-            else:
-                avg_var = 'Pts Avg'
-
-            if (GLOBALS['USE_ADJ_STD']):
-                std_var = 'Pts Std Adj'
-            else:
-                std_var = 'Pts Std'
-
-            df_copy['Sim ' + str(week_num)] = np.random.normal(loc=df_copy[avg_var], scale=df_copy[std_var])
-
-            df_copy_opp = copy.copy(df_copy[['Sim ' + str(week_num), 'Opp ' + str(week_num)]])
-
-            df_copy_opp = df_copy.sort_values(by='Opp ' + str(week_num), ascending=True).reset_index(drop=True)
-
-            df_copy['Sim W'] = df_copy['Sim W'] + (df_copy['Sim ' + str(week_num)] > df_copy_opp['Sim ' + str(week_num)])
-            df_copy['Sim L'] = df_copy['Sim L'] + (df_copy['Sim ' + str(week_num)] < df_copy_opp['Sim ' + str(week_num)])
-            df_copy['Sim T'] = df_copy['Sim T'] + (df_copy['Sim ' + str(week_num)] == df_copy_opp['Sim ' + str(week_num)])
-
-            if (week_num == GLOBALS['CUR_WEEK']):
-                df_copy['Sim W curwk'] = df_copy['Sim W']
-                df_copy['Sim L curwk'] = df_copy['Sim L']
-                df_copy['Sim T curwk'] = df_copy['Sim T']
-
-                df_copy['As Good'] = 0 + (df_copy['Sim W'] >= df_copy['W'])
-
-                df_copy['Sim W'] = 0
-                df_copy['Sim L'] = 0
-                df_copy['Sim T'] = 0
-
-        df_copy['Tot W'] = df_copy['W'] + df_copy['Sim W']
-        df_copy['Tot L'] = df_copy['L'] + df_copy['Sim L']
-        df_copy['Tot T'] = 0 + df_copy['Sim T']
-
-        df_copy['Tot Pts'] = df_copy[['Pts ' + str(x) for x in range(1, GLOBALS['CUR_WEEK'] + 1)] + ['Pts ' + str(x) for x in range(GLOBALS['CUR_WEEK'] + 1, GLOBALS['TOT_WEEKS'] + 1)]].sum(axis=1, skipna=True)
-
-        #df_copy = df_copy.sort_values(by=['Tot W','Tot Pts'], ascending=False).reset_index(drop=True)
-        df_copy = places(df_copy, GLOBALS['TOT_WEEKS'], 'Tot W', 'Tot Pts')
-        df_copy['Playoffs'] = 0 + (df_copy.index <= 3)
-        #print(df_copy)
-
-        # print('Sim' + str(sim_num))
-        # print(df_copy[['Names','W', 'Sim W', 'Tot W','Tot T','Tot L','Playoffs']])
-
-        df_copy = df_copy.sort_values(by='Teams', ascending=True).reset_index(drop=True)
-        df['Playoffs'] = df['Playoffs'] + df_copy['Playoffs']
-        df['As Good'] = df['As Good'] + df_copy['As Good']
-
-        sys.stdout.write("GLOBALS['SIMULATIONS'] completed: %d of %d    \r" % (sim_num+1, GLOBALS['SIMULATIONS']))
-        sys.stdout.flush()
-
-    df['Playoff Odds'] = df['Playoffs'] / GLOBALS['SIMULATIONS']
-    df['As Good Odds'] = df['As Good'] / GLOBALS['SIMULATIONS']
-
-    df = df.sort_values(by='Playoff Odds', ascending=False).reset_index(drop=True)
+    df.sort_values(by='Playoff Odds', ascending=False, inplace=True)
+    df.reset_index(drop=True, inplace=True)
     print(df[['Names', 'Playoff Odds', 'As Good Odds']])
 
-    #df = df.sort_values(by=['W','Pts Tot'], ascending=False).reset_index(drop=True)
-    df = places(df, 'W', 'Pts Tot')
-    df['Place'] = df.index + 1
+    df = places(df, GLOBALS['CUR_WEEK'])
 
     output = df[[
         'Place', 'Names', 'W', 'L',
@@ -342,8 +361,14 @@ def main():
         'Breakdown W', 'Breakdown L',
         'Playoff Odds', 'As Good Odds'
     ]]
-    output.to_csv('../example-output/output_wk_%s.csv' % str(GLOBALS['CUR_WEEK']), index=False)
-    df.to_csv('../example-output/output_raw_wk_%s.csv' % str(GLOBALS['CUR_WEEK']), index=False)
+
+    fname = 'output_wk_{}.csv'.format(GLOBALS['CUR_WEEK'])
+    fout = os.path.join(GLOBALS['OUTDIR'], fname)
+    output.to_csv(fout, index=False)
+
+    fname = 'output_raw_wk_{}.csv'.format(GLOBALS['CUR_WEEK'])
+    fout = os.path.join(GLOBALS['OUTDIR'], fname)
+    df.to_csv(fout, index=False)
 
 
 if __name__ == "__main__":
