@@ -364,8 +364,6 @@ def main():
 
     df = places(df, GLOBALS['CUR_WEEK'])
 
-    assert 0
-
     # get breakdown
     df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
     df['Breakdown W'] = 0
