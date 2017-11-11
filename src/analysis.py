@@ -2,25 +2,24 @@ import os
 import logging
 import sys
 import copy
+import json
+import argparse
 import random
 import pandas as pd
 import numpy as np
 import multiprocessing as mp
 
 
-GLOBALS = dict()
-GLOBALS['OUTDIR'] = "../example-output"
-GLOBALS['LOG_PATH'] = os.path.join(GLOBALS['OUTDIR'], "log.log")
-GLOBALS['CUR_WEEK'] = 4
-GLOBALS['TOT_WEEKS'] = 12
-GLOBALS['TOT_TEAMS'] = 12
-GLOBALS['SIMULATIONS'] = 100
-GLOBALS['RAND_SEED'] = 123456
-GLOBALS['SCHEDULE_DATA'] = '../example-data/schedule.csv'
-GLOBALS['RESULTS_DATA'] = '../example-data/results.csv'
-GLOBALS['USE_ADJ_AVG'] = True
-GLOBALS['USE_ADJ_STD'] = True
-GLOBALS['MULTIPROCESSING'] = {'use': False, 'processes': 4}
+def parse_args():
+    parser = argparse.ArgumentParser(description='H2H Fantasy league analyzer')
+    parser.add_argument('--config', '-c',
+                        metavar='Configuration file',
+                        type=str,
+                        dest='config',
+                        required=True,
+                        help='A JSON file with configuration parameters')
+
+    return parser.parse_args()
 
 
 def set_logger():
@@ -28,7 +27,8 @@ def set_logger():
     LOG = logging.getLogger(__name__)
     LOG.setLevel(logging.INFO)
 
-    handler = logging.FileHandler(GLOBALS['LOG_PATH'], mode='w')
+    log_path = os.path.join(GLOBALS['OUTDIR'], "log.log")
+    handler = logging.FileHandler(log_path, mode='w')
     handler.setLevel(logging.INFO)
 
     fmt = '%(asctime)s - %(levelname)s - %(message)s'
@@ -36,6 +36,13 @@ def set_logger():
     handler.setFormatter(formatter)
 
     LOG.addHandler(handler)
+
+
+def load_config(path):
+    with open(path) as config_file:
+        config = json.load(config_file)
+
+    return config
 
 
 def get_result(r, wk):
@@ -357,6 +364,8 @@ def main():
 
     df = places(df, GLOBALS['CUR_WEEK'])
 
+    assert 0
+
     # get breakdown
     df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
     df['Breakdown W'] = 0
@@ -403,6 +412,9 @@ def main():
 
 
 if __name__ == "__main__":
+    config = parse_args().config
+    GLOBALS = load_config(config)
+
     set_logger()
     LOG.info("execution began")
     main()
