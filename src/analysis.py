@@ -5,6 +5,7 @@ import copy
 import random
 import pandas as pd
 import numpy as np
+import multiprocessing as mp
 
 
 GLOBALS = dict()
@@ -19,6 +20,7 @@ GLOBALS['SCHEDULE_DATA'] = '../example-data/schedule.csv'
 GLOBALS['RESULTS_DATA'] = '../example-data/results.csv'
 GLOBALS['USE_ADJ_AVG'] = True
 GLOBALS['USE_ADJ_STD'] = True
+GLOBALS['MULTIPROCESSING'] = {'use': False, 'processes': 4}
 
 
 def set_logger():
@@ -187,7 +189,6 @@ def places(df, curwk):
     df_temp.sort_values(by='W', ascending=False, inplace=True)
     df_temp.reset_index(drop=True, inplace=True)
 
-    # establish places (with ties)
     df_temp['Place'] = 0
     place = 1
     for i, row in df_temp.iterrows():
@@ -208,12 +209,12 @@ def places(df, curwk):
     return df_temp
 
 
-def simulate(df):
-    df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
+def simulate(args):
+    df = args['df']
+    GLOBALS = args['GLOBALS']
+    sim_idx = args['sim_idx']
 
-    np.random.seed(GLOBALS['RAND_SEED'])
-
-    df = df.join(pd.DataFrame(0, df.index, ['Playoffs', 'As Good']))
+    dfc = copy.copy(df)
 
     if GLOBALS['USE_ADJ_AVG']:
         avg_var = 'Pts Avg Adj'
@@ -234,58 +235,88 @@ def simulate(df):
     pts_cols = ['Pts ' + w for w in all_wks]
     futr_pts_cols = ['Pts ' + w for w in futr_wks]
 
-    # pts_agnst_cols = ['Pts Agnst' + w for w in all_wks]
     futr_pts_agnst_cols = ['Pts Agnst ' + w for w in futr_wks]
 
-    for sim_num in range(GLOBALS['SIMULATIONS']):
-        dfc = copy.copy(df)
+    dfc = dfc[
+        [
+            'Teams', 'W', 'L', 'T',
+            'Pts Tot', 'Pts Tot Agnst',
+            avg_var, std_var
+        ] + opp_cols
+    ]
+    dfc[[
+        'Real W', 'Real L', 'Real T',
+        'Real Pts Tot', 'Real Pts Tot Agnst'
+    ]] = dfc[['W', 'L', 'T', 'Pts Tot', 'Pts Tot Agnst']]
 
-        dfc = dfc[
-            [
-                'Teams', 'W', 'L', 'T',
-                'Pts Tot', 'Pts Tot Agnst',
-                avg_var, std_var
-            ] + opp_cols
-        ]
-        dfc[[
-            'Real W', 'Real L', 'Real T',
-            'Real Pts Tot', 'Real Pts Tot Agnst'
-        ]] = dfc[['W', 'L', 'T', 'Pts Tot', 'Pts Tot Agnst']]
+    means = dfc[[avg_var] * len(pts_cols)]
+    stds = dfc[[std_var] * len(pts_cols)]
+    np.random.seed(GLOBALS['RAND_SEED'] + sim_idx)
+    dfc[pts_cols] = pd.DataFrame(np.random.normal(loc=means, scale=stds))
 
-        means = dfc[[avg_var] * len(pts_cols)]
-        stds = dfc[[std_var] * len(pts_cols)]
-        dfc[pts_cols] = pd.DataFrame(np.random.normal(loc=means, scale=stds))
+    get_results(dfc, GLOBALS['TOT_WEEKS'])
 
-        get_results(dfc, GLOBALS['TOT_WEEKS'])
+    get_record(dfc, GLOBALS['CUR_WEEK'])
+    dfc['As Good'] = dfc['W'] >= dfc['Real W']
 
-        get_record(dfc, GLOBALS['CUR_WEEK'])
-        dfc['As Good'] = dfc['W'] >= dfc['Real W']
+    get_record(dfc, GLOBALS['TOT_WEEKS'], startwk=GLOBALS['CUR_WEEK'] + 1)
 
-        get_record(dfc, GLOBALS['TOT_WEEKS'], startwk=GLOBALS['CUR_WEEK'] + 1)
+    dfc['W'] += dfc['Real W']
+    dfc['L'] += dfc['Real L']
+    dfc['T'] += dfc['Real T']
 
-        dfc['W'] += dfc['Real W']
-        dfc['L'] += dfc['Real L']
-        dfc['T'] += dfc['Real T']
+    sim_futr_pts = dfc[futr_pts_cols].sum(axis=1, skipna=True)
+    dfc['Pts Tot'] = dfc['Real Pts Tot'] + sim_futr_pts
 
-        sim_futr_pts = dfc[futr_pts_cols].sum(axis=1, skipna=True)
-        dfc['Pts Tot'] = dfc['Real Pts Tot'] + sim_futr_pts
+    sim_futr_pts_agnst = dfc[futr_pts_agnst_cols].sum(axis=1, skipna=True)
+    dfc['Pts Tot Agnst'] = dfc['Real Pts Tot Agnst'] + sim_futr_pts_agnst
 
-        sim_futr_pts_agnst = dfc[futr_pts_agnst_cols].sum(axis=1, skipna=True)
-        dfc['Pts Tot Agnst'] = dfc['Real Pts Tot Agnst'] + sim_futr_pts_agnst
+    dfc = places(dfc, GLOBALS['TOT_WEEKS'])
 
-        dfc = places(dfc, GLOBALS['TOT_WEEKS'])
+    dfc['Playoffs'] = 0 + (dfc.index <= 3)
 
-        dfc['Playoffs'] = 0 + (dfc.index <= 3)
+    dfc.sort_values(by='Teams', ascending=True, inplace=True)
+    dfc.reset_index(drop=True, inplace=True)
 
-        dfc.sort_values(by='Teams', ascending=True, inplace=True)
-        dfc.reset_index(drop=True, inplace=True)
+    return dfc[['Playoffs', 'As Good']]
 
-        df['Playoffs'] = df['Playoffs'] + dfc['Playoffs']
-        df['As Good'] = df['As Good'] + dfc['As Good']
 
-        msg = "Simulations completed: {} of {}    \r"
-        sys.stdout.write(msg.format(sim_num + 1, GLOBALS['SIMULATIONS']))
-        sys.stdout.flush()
+def sim_progress_msg(sim_idx):
+    msg = "Simulations completed: {} of {}    \r"
+    sys.stdout.write(msg.format(sim_idx + 1, GLOBALS['SIMULATIONS']))
+    sys.stdout.flush()
+
+
+def run_simulations(df):
+    df = df.sort_values(by='Teams', ascending=True).reset_index(drop=True)
+
+    calls = []
+    for sim_idx in range(GLOBALS['SIMULATIONS']):
+        calls.append({
+            'df': df,
+            'GLOBALS': GLOBALS,
+            'sim_idx': sim_idx
+        })
+
+    if GLOBALS['MULTIPROCESSING']['use']:
+        with mp.Pool(processes=GLOBALS['MULTIPROCESSING']['processes']) as p:
+            results = []
+            for i, res in enumerate(p.imap(simulate, calls)):
+                results.append(res)
+                sim_progress_msg(i)
+
+    else:
+        results = []
+        for i, args in enumerate(calls):
+            results.append(simulate(args))
+            sim_progress_msg(i)
+
+    print("Simulations complete                         ")
+
+    df = df.join(pd.DataFrame(0, df.index, ['Playoffs', 'As Good']))
+    for r in results:
+        df['Playoffs'] = df['Playoffs'] + r['Playoffs']
+        df['As Good'] = df['As Good'] + r['As Good']
 
     df['Playoff Odds'] = df['Playoffs'] / GLOBALS['SIMULATIONS']
     df['As Good Odds'] = df['As Good'] / GLOBALS['SIMULATIONS']
@@ -307,12 +338,10 @@ def main():
     df['Pts Tot'] = df[cols].sum(axis=1, skipna=True)
 
     pts_avg_all = np.mean(df['Pts Avg'])
-    print('Mean All: {}'.format(pts_avg_all))
     all_data = []
     for x in range(1, GLOBALS['CUR_WEEK'] + 1):
         all_data = all_data + list(df['Pts ' + str(x)])
     pts_std_all = np.std(all_data)
-    print('SD All: {}'.format(pts_std_all))
 
     pct_seas = GLOBALS['CUR_WEEK'] / GLOBALS['TOT_WEEKS']
     df['Pts Avg Adj'] = pct_seas * df['Pts Avg'] + (1 - pct_seas) * pts_avg_all
@@ -340,18 +369,12 @@ def main():
         df['Breakdown L'] += df.index
 
     df = df.sort_values(by='W', ascending=False).reset_index(drop=True)
-    print(df[[
-        'Names', 'W', 'L',
-        'Breakdown W', 'Breakdown L',
-        'Pts Tot', 'Pts Tot Agnst'
-    ]])
 
     print("Simulating...")
-    df = simulate(df)
+    df = run_simulations(df)
 
     df.sort_values(by='Playoff Odds', ascending=False, inplace=True)
     df.reset_index(drop=True, inplace=True)
-    print(df[['Names', 'Playoff Odds', 'As Good Odds']])
 
     df = places(df, GLOBALS['CUR_WEEK'])
 
@@ -361,6 +384,14 @@ def main():
         'Breakdown W', 'Breakdown L',
         'Playoff Odds', 'As Good Odds'
     ]]
+
+    pd_options = (
+        'display.max_rows', None,
+        'display.max_columns', None,
+        'display.expand_frame_repr', False
+    )
+    with pd.option_context(*pd_options):
+        print(output)
 
     fname = 'output_wk_{}.csv'.format(GLOBALS['CUR_WEEK'])
     fout = os.path.join(GLOBALS['OUTDIR'], fname)
